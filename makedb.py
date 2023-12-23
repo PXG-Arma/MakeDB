@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 
 #
@@ -9,8 +10,8 @@ import sys
 #
 
 SCRIPT_NAME    = 'makedb.py'
-SCRIPT_VERSION = '0.1.0'
-SCRIPT_DATE    = '2023-12-22'
+SCRIPT_VERSION = '0.2.0'
+SCRIPT_DATE    = '2023-12-23'
 
 # String, that appear in magazine IDs. Used to differentiate weapon IDs
 # from magazine IDs.
@@ -22,15 +23,14 @@ WEAPONS_EXLUDE_LIST = ['_mag_', '_Mag', 'Rnd_', 'Laser', 'Magazine',
                        '0rnd', 'MLRS_X',
                        'LOP_BM8', 'LOP_OF', 'LOP_BK', 'LOP_BR', 'LOP_UOF']
 
-#
-# Globals
-#
+AVAIL_FACTIONS_BASE = 'PXG_Available_Factions_'
+AVAIL_FACTIONS_BLUFOR = AVAIL_FACTIONS_BASE + 'Blue.sqf'
+AVAIL_FACTIONS_OPFOR  = AVAIL_FACTIONS_BASE + 'Opfor.sqf'
+AVAIL_FACTIONS_INDEP  = AVAIL_FACTIONS_BASE + 'Indep.sqf'
 
-enable_debug = False
-
-vehicles = []
-weapons  = {}
-mags     = {}
+VARIANT_LIST_NAME = 'variantlist.sqf'
+VARIANT_VEHICLES_PREFIX  = 'vehicles_'
+VARIANT_VEHICLES_POSTFIX = '.sqf'
 
 #
 # Classes
@@ -62,9 +62,60 @@ class Magazine:
     short_name  = ''
     description = ''
 
+class Factions:
+    """The root container for all factions."""
+    def __init__(self):
+        """Initialises each object with its own copy of arrays."""
+        self.blufor = []
+        self.opfor  = []
+        self.indep  = []
+
+class Faction:
+    """Container for faction data."""
+    name = ''
+
+    def __init__(self):
+        """Initialises each object with its own copy of arrays."""
+        self.variants = []
+
+class FactionVariant:
+    """Container for data of a particular faction variant."""
+    name = ''
+    era  = ''
+    
+    def __init__(self):
+        """Initialises each object with its own copy of arrays."""
+        self.motorpool = []
+
+class FactionMpoolGroup:
+    """Container for a motorpool group of vehicles."""
+    group = ''
+    
+    def __init__(self):
+        """Initialises each object with its own copy of arrays."""
+        self.vehicles = []
+
+class FactionMpoolVehicle:
+    """Container for a motorpool vehicle data inside a group."""
+    id    = ''
+    cargo = ''
+
+#
+# Globals
+#
+
+enable_debug = False
+
+vehicles = []
+weapons  = {}
+mags     = {}
+factions = Factions()
+
 #
 # Functions
 #
+
+# General utility
 
 def eprint(*args, **kwargs):
     """Prints to STDERR."""
@@ -76,6 +127,8 @@ def debug_print(*args, **kwargs):
     if enable_debug:
         eprint(*args, **kwargs)
 
+# Command line args
+
 def parse_args():
     """Parses command line arguments and returns the resulting parser object.
     """
@@ -86,8 +139,7 @@ def parse_args():
     p.add_argument('-v', '--vehicles',
                    help='vehicles dump file',
                    metavar='VEHICLES_FILE',
-                   dest='vehicles_file',
-                   required=True
+                   dest='vehicles_file'
                    )
     p.add_argument('-w', '--weapons',
                    help='weapons dump file',
@@ -99,10 +151,16 @@ def parse_args():
                    metavar='MAGS_FILE',
                    dest='mags_file'
                    )
+    p.add_argument('-f', '--factions',
+                   help='factions template directory',
+                   metavar='FACTIONS_DIR',
+                   dest='factions_dir'
+                   )
     p.add_argument('-o', '--output',
                    help='output JSON file (otherwise writing to STDOUT)',
                    metavar='OUT_FILE',
-                   dest='out_file'
+                   dest='out_file',
+                   required=True
                    )
     p.add_argument('-d', '--debug',
                    help='turn on debug output',
@@ -110,6 +168,8 @@ def parse_args():
                    action='store_true'
                    )
     return p.parse_args()
+
+# Arma 3 data dump parsing
 
 def process_vehicles_line(line):
     """Processes the vehicle dump line and returns the Vehicle object.
@@ -206,6 +266,312 @@ def process_mags_line(line):
 
     return m
 
+def read_vehicles_dump_file(path):
+    """Reads vehicles dump file at the specified path, and saves the data to
+    a global variable.
+    Exits the script in the case of errors.
+    """
+    global vehicles
+
+    debug_print(f":: Reading vehicles dump file '{args.vehicles_file}'")
+    with open(path, 'r') as file:
+        for line in file:
+            if (len(line) < 10):
+                continue
+            v = process_vehicles_line(line)
+
+            if v is None:
+                eprint(f"Could not parse vehicle line '{line}'")
+                sys.exit(1)
+            else:
+                vehicles.append(v)
+
+    c = len(vehicles)
+    debug_print(f"=> Read {c} vehicle entries")
+
+def read_weapons_dump_file(path):
+    """Reads weapons dump file at the specified path, and saves the data to
+    a global variable.
+    Exits the script in the case of errors.
+    """
+    global weapons
+
+    debug_print(f":: Reading weapons dump file '{args.weapons_file}'")
+    with open(path, 'r') as file:
+        for line in file:
+            if (len(line) < 10):
+                continue
+            w = process_weapons_line(line)
+
+            if w is None:
+                eprint(f"Could not parse weapon line '{line}'")
+                sys.exit(1)
+            else:
+                weapons[w.id] = w
+
+    c = len(weapons)
+    debug_print(f"=> Read {c} weapon entries")
+
+def read_mags_dump_file(path):
+    """Reads mags dump file at the specified path, and saves the data to
+    a global variable.
+    Exits the script in the case of errors.
+    """
+    global mags
+
+    debug_print(f":: Reading mags dump file '{args.mags_file}'")
+    with open(path, 'r') as file:
+        for line in file:
+            if (len(line) < 10):
+                continue
+            m = process_mags_line(line)
+
+            if m is None:
+                eprint(f"Could not parse mag line '{line}'")
+                sys.exit(1)
+            else:
+                mags[m.id] = m
+
+    c = len(mags)
+    debug_print(f"=> Read {c} magazine entries")
+
+# Additional motorpool generation utilities
+
+def enhance_turret_data():
+    """If available, uses data from the weapons dump to enhance the data about
+    the turrets in the vehicles database.
+    Does nothing if weapon data is not available.
+    Complains about unknown turret IDs.
+    """
+    global vehicles
+    global weapons
+
+    if len(weapons) > 0:
+        debug_print(':: Weapon data is available - replacing turret IDs ' +
+                    'with weapon data')
+        not_found = []
+
+        for v in vehicles:
+            for i, t in enumerate(v.turrets):
+                if t in weapons:
+                    v.turrets[i] = weapons[t]
+                else:
+                    if t not in not_found:
+                        not_found.append(t)
+                        eprint(f"-- Unknown turret ID: '{t}'")
+
+# JSON
+
+def write_json_file(data_obj, path):
+    """Serializes `data_obj` to JSON, and writes the result to the file with
+    the given path.
+    """
+    with open(path, 'w') as file:
+        json.dump(
+                data_obj,
+                fp=file,
+                default=vars,
+                indent=4
+                )
+
+# Faction parsing
+
+def parse_factions(factions_dir):
+    """Parses faction data from the `Scripts/Factions` folder of PXG templates.
+    Exits the script in the case of errors.
+    """
+    global factions
+
+    blf = read_available_factions(
+            os.path.join(factions_dir, AVAIL_FACTIONS_BLUFOR))
+    opf = read_available_factions(
+            os.path.join(factions_dir, AVAIL_FACTIONS_OPFOR))
+    ind = read_available_factions(
+            os.path.join(factions_dir, AVAIL_FACTIONS_INDEP))
+
+    debug_print(f"=> Found {len(blf)} BLUFOR, {len(opf)} OPFOR, " +
+                f"and {len(ind)} INDEP factions.")
+
+    debug_print('\n=> BLUFOR')
+    parse_faction_dir_list(factions.blufor, factions_dir, *blf)
+    debug_print('\n=> OPFOR')
+    parse_faction_dir_list(factions.opfor,  factions_dir, *opf)
+    debug_print('\n=> INDEP')
+    parse_faction_dir_list(factions.indep,  factions_dir, *ind)
+    debug_print()
+
+def read_available_factions(path):
+    """Reads an available factions file, and returns an array of factions,
+    found in the file.
+    """
+    factions = []
+
+    with open(path, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if not line.startswith('"'):
+                continue
+
+            # Strip the leading '"' and the trailing '",'
+            f = line.strip('",')
+            factions.append(f)
+
+    return factions
+
+def read_variant_list(path):
+    """Reads a faction variant list file, and returns an array of
+    available variants, found in the file.
+    Exits the script on errors.
+    """
+    variants = []
+
+    with open(path, 'r') as file:
+        for line in file:
+            if line.strip() == '':
+                continue
+
+            ob = line.find('[')
+            cb = line.rfind(']')
+
+            if ob < 0 or cb < 0:
+                eprint(f"Error reading variant list file '{path}'.")
+                sys.exit(1)
+
+            vlist = line[ob+1:cb]
+            words = vlist.split(',')
+            for w in words:
+                w = w.strip()
+                if w.startswith('"') and w.endswith('"'):
+                    w = w.strip('"')
+                    variants.append(w)
+                else:
+                    eprint(f"Error reading variant list file '{path}'.")
+                    sys.exit(1)
+            break
+
+    return variants
+
+def read_variant_motorpool(path, dest_array):
+    """Reads a motorpool file of a faction variant, and appends the
+    motorpool vehicle groups to `dest_array`.
+    Exits the script on errors.
+    """
+    stage = 1
+    json_data = ''
+
+    with open(path, 'r') as file:
+        for line in file:
+            # Start reading where the array begins
+            if stage == 1:
+                if line.strip().startswith('['):
+                    stage += 1
+                    json_data += line
+            elif stage == 2:
+                if line.strip().endswith('];'):
+                    stage += 1
+                    json_data += ']'
+                else:
+                    json_data += line
+            # Stop reading after the array ends
+            elif stage == 3:
+                break
+
+    # Replace invalid quotes
+    json_data = json_data.replace("'", '"')
+
+    # Try to parse as JSON
+    try:
+        data = json.loads(json_data)
+    except Exception as e:
+        eprint(f"Failed to read motorpool file '{path}' as JSON:")
+        eprint(e)
+        sys.exit(1)
+
+    # Process all the vehicle groups
+    group_count = 0
+    vehicle_count = 0
+    for group in data:
+        if len(group) != 2:
+            eprint(f"Error reading groups in motorpool file '{path}'.")
+            sys.exit(1)
+
+        g = FactionMpoolGroup()
+        g.group = group[0]
+
+        vehicles = group[1]
+        for vehicle in vehicles:
+            if len(vehicle) != 2:
+                eprint("Error reading vehicle data in motorpool file " +
+                       f"'{path}'.")
+                sys.exit(1)
+
+            v = FactionMpoolVehicle()
+            v.id    = vehicle[0]
+            v.cargo = int(vehicle[1])
+
+            g.vehicles.append(v)
+            vehicle_count += 1
+
+        dest_array.append(g)
+        group_count += 1
+
+    debug_print(f" ({group_count} g, {vehicle_count} v)")
+
+def parse_faction_dir(faction_dir, faction_name):
+    """Parses data from a faction directory, and returns a `Faction` object.
+    Returns `None` in case of errors.
+    """
+    f = Faction()
+    f.name = faction_name
+
+    variants = read_variant_list(
+            os.path.join(faction_dir, VARIANT_LIST_NAME))
+    if len(variants) == 0:
+        eprint(f"Zero variants for faction '{faction_name}'.")
+        return None
+
+    if len(variants) > 1:
+        debug_print(f"   {faction_name}:")
+
+    for v in variants:
+        words = v.split()
+        if len(words) != 2:
+            eprint(f"Invalid number of words in variant '{v}'.")
+            return None
+
+        fv = FactionVariant()
+        fv.name = words[0]
+        fv.era  = words[1]
+
+        mpname = VARIANT_VEHICLES_PREFIX + fv.name.lower() + \
+                 VARIANT_VEHICLES_POSTFIX
+        mppath = os.path.join(faction_dir, fv.era, mpname)
+
+        if len(variants) > 1:
+            debug_print(f"      * {fv.name} {fv.era}", end='')
+        else:
+            debug_print(f"   {faction_name}: {fv.name} {fv.era}", end='')
+        read_variant_motorpool(mppath, fv.motorpool)
+
+        f.variants.append(fv)
+
+    return f
+
+def parse_faction_dir_list(dest_array, base_dir, *faction_dirs):
+    """Parses a list of faction directories, and appends the results to
+    the given array
+    Exits the script on errors.
+    """
+    for fd in faction_dirs:
+        fp = os.path.join(base_dir, fd)
+        f  = parse_faction_dir(fp, fd)
+
+        if f is None:
+            eprint(f"Failed to read faction data from '{fp}'.")
+            sys.exit(1)
+        else:
+            dest_array.append(f)
+
 #
 # MAIN
 #
@@ -222,116 +588,50 @@ if __name__ == '__main__':
     debug_print(f"{SCRIPT_NAME} {SCRIPT_VERSION} ({SCRIPT_DATE})\n")
 
     #
-    # Read vehicles dump file
+    # Figure out what to do, and execute it
     #
 
-    debug_print(f":: Reading vehicles dump file '{args.vehicles_file}'")
-    with open(args.vehicles_file, 'r') as file:
-        for line in file:
-            if (len(line) < 10):
-                continue
-            v = process_vehicles_line(line)
+    # -> Make faction database
+    if args.factions_dir is not None:
 
-            if v is None:
-                eprint(f"Could not parse vehicle line '{line}'")
-                sys.exit(1)
-            else:
-                vehicles.append(v)
+        # Parse faction data from the factions directory
+        debug_print(f":: Parsing factions from '{args.factions_dir}")
+        parse_factions(args.factions_dir)
 
-    c = len(vehicles)
-    debug_print(f"=> Read {c} vehicle entries")
+        # Write JSON file
+        if len(factions.blufor) == 0 and \
+           len(factions.opfor)  == 0 and \
+           len(factions.indep)  == 0:
+            eprint('No faction data')
+            sys.exit(1)
 
-    #
-    # Read weapons dump file
-    #
+        debug_print(f":: Writing faction database to file '{args.out_file}'")
+        write_json_file(factions, args.out_file)
 
-    if args.weapons_file is not None:
-        debug_print(f":: Reading weapons dump file '{args.weapons_file}'")
+    # -> Make motorpool database
+    elif args.vehicles_file is not None:
 
-        with open(args.weapons_file, 'r') as file:
-            for line in file:
-                if (len(line) < 10):
-                    continue
-                w = process_weapons_line(line)
+        # Read Arma 3 dump files
+        read_vehicles_dump_file(args.vehicles_file)
+        if args.weapons_file is not None:
+            read_weapons_dump_file(args.weapons_file)
+        if args.mags_file is not None:
+            read_mags_dump_file(args.mags_file)
 
-                if w is None:
-                    eprint(f"Could not parse weapon line '{line}'")
-                    sys.exit(1)
-                else:
-                    weapons[w.id] = w
+        # Prepare database
+        enhance_turret_data()
 
-        c = len(weapons)
-        debug_print(f"=> Read {c} weapon entries")
+        # Write JSON file
+        if len(vehicles) == 0:
+            eprint('No vehicle data')
+            sys.exit(1)
 
-    #
-    # Read mags dump file
-    #
+        debug_print(f":: Writing motorpool database to file '{args.out_file}'")
+        write_json_file(vehicles, args.out_file)
 
-    if args.mags_file is not None:
-        debug_print(f":: Reading mags dump file '{args.mags_file}'")
-
-        with open(args.mags_file, 'r') as file:
-            for line in file:
-                if (len(line) < 10):
-                    continue
-                m = process_mags_line(line)
-
-                if m is None:
-                    eprint(f"Could not parse mag line '{line}'")
-                    sys.exit(1)
-                else:
-                    mags[m.id] = m
-
-        c = len(mags)
-        debug_print(f"=> Read {c} magazine entries")
-
-    #
-    # Prepare database
-    #
-
-    # Replace turret IDs with real weapon data
-    if len(weapons) > 0:
-        debug_print(':: Weapon data is available - replacing turret IDs ' +
-                    'with weapon data')
-        not_found = []
-
-        for v in vehicles:
-            for i, t in enumerate(v.turrets):
-                if t in weapons:
-                    v.turrets[i] = weapons[t]
-                else:
-                    if t not in not_found:
-                        not_found.append(t)
-                        eprint(f"-- Unknown turret ID: '{t}'")
-
-
-    #
-    # Write JSON file
-    #
-
-    if len(vehicles) == 0:
-        eprint('No vehicle data')
-        sys.exit(1)
-
-    # Write to STDOUT
-    json_dest = sys.stdout
-    file = None
-    # Write to file
-    if args.out_file is not None:
-        debug_print(f":: Writing database to file '{args.out_file}'")
-        file = open(args.out_file, 'w')
-        json_dest = file
+    # -> Incompetent user, do nothing
     else:
-        debug_print(":: Writing database to STDOUT")
-
-    json.dump(
-            vehicles,
-            fp=json_dest,
-            default=vars,
-            indent=4
-            )
-
-    if file is not None:
-        file.close()
+        eprint('Neither vehicles dump file, nor factions dir were specified.')
+        sys.exit(1)
 
     debug_print(":: Done. Have a nice day.")
