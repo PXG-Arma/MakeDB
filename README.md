@@ -37,6 +37,8 @@ To include the detailed turret data, make use of the weapons dump as well:
 makedb.py -v vehicles.dat -w weapons.dat -o motorpool.json
 ```
 
+Note that weapon data will only be applied to the turret IDs, that exist in the weapons dump. Non-existent IDs will be left as pure strings.
+
 In both cases, the resulting file will be written to `motorpool.json` in the current working directory. It will overwrite anything previously there! If the output file argument is not passed, the script will write to the standard output, which one can redirect where appropriate.
 
 Magazine dump can be read by specifying the `-m` option, but is not used at the moment.
