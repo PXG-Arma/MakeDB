@@ -5,17 +5,19 @@ import json
 import os
 import sys
 
+from pprint import pprint
+
 #
 # Constants
 #
 
 SCRIPT_NAME    = 'makedb.py'
-SCRIPT_VERSION = '0.2.0'
-SCRIPT_DATE    = '2023-12-23'
+SCRIPT_VERSION = '1.0.0'
+SCRIPT_DATE    = '2024-08-21'
 
-# String, that appear in magazine IDs. Used to differentiate weapon IDs
+# Strings, that appear in magazine IDs. Used to differentiate weapon IDs
 # from magazine IDs.
-WEAPONS_EXLUDE_LIST = ['_mag_', '_Mag', 'Rnd_', 'Laser', 'Magazine',
+WEAPONS_EXCLUDE_LIST = ['_mag_', '_Mag', 'Rnd_', 'Laser', 'Magazine',
                        '_magazine', 'mining', 'Smoke', 'missiles',
                        'MASTERSAFE', 'fcsmag', 'Horn', 'rnds', '_YELLOW',
                        '_RED', '_GREEN', '_HEAT', '_SABOT', '_HE',
@@ -224,7 +226,7 @@ def process_vehicles_line(line):
             # Filter out things, that aren't weapons
             if len(w) > 0:
                 exclude = False
-                for excl in WEAPONS_EXLUDE_LIST:
+                for excl in WEAPONS_EXCLUDE_LIST:
                     if w.find(excl) >= 0:
                         exclude = True
                         break
@@ -426,28 +428,54 @@ def read_variant_list(path):
     variants = []
 
     with open(path, 'r') as file:
+        start_found = False
+        end_found = False
+
+        vlist = ''
+
+        # Capture everything between '[' and ']' across multiple lines
         for line in file:
-            if line.strip() == '':
+            line = line.strip()
+            # Skip empty and comment lines
+            if line == '' or line.startswith('//'):
                 continue
 
             ob = line.find('[')
             cb = line.rfind(']')
 
-            if ob < 0 or cb < 0:
-                eprint(f"Error reading variant list file '{path}'.")
-                sys.exit(1)
+            if not start_found:
+                if ob >= 0:
+                    start_found = True
+                    line = line[ob+1:]
+            else:
+                if cb >= 0:
+                    end_found = True
+                    line = line[:cb]
 
-            vlist = line[ob+1:cb]
-            words = vlist.split(',')
-            for w in words:
-                w = w.strip()
-                if w.startswith('"') and w.endswith('"'):
-                    w = w.strip('"')
+            vlist += line;
+            if end_found:
+                break
+
+        if not end_found:
+            eprint(f"Error reading variant list file '{path}': "
+                   "no closing bracket found.")
+            sys.exit(1)
+
+        # Parse variant names from the list
+        words = vlist.split(',')
+        for w in words:
+            w = w.strip()
+            if w == '':
+                continue
+            if w.startswith('"') and w.endswith('"'):
+                w = w.strip('"')
+                # Skip separator entries
+                if not w.startswith('-'):
                     variants.append(w)
-                else:
-                    eprint(f"Error reading variant list file '{path}'.")
-                    sys.exit(1)
-            break
+            else:
+                eprint(f"Error reading variant list file '{path}': "
+                       f"could not parse word '{w}'")
+                sys.exit(1)
 
     return variants
 
@@ -471,6 +499,10 @@ def read_variant_motorpool(path, dest_array):
                     stage += 1
                     json_data += ']'
                 else:
+                    # Remove potential comments
+                    i = line.rfind('//')
+                    if i >= 0:
+                        line = line[:i]
                     json_data += line
             # Stop reading after the array ends
             elif stage == 3:
@@ -502,7 +534,9 @@ def read_variant_motorpool(path, dest_array):
         for vehicle in vehicles:
             if len(vehicle) != 2:
                 eprint("Error reading vehicle data in motorpool file " +
-                       f"'{path}'.")
+                       f"'{path}': vehicle entry does not consist of two fields.")
+                eprint('Dump of the vehicle entry:')
+                pprint(vehicle)
                 sys.exit(1)
 
             v = FactionMpoolVehicle()
@@ -543,9 +577,28 @@ def parse_faction_dir(faction_dir, faction_name):
         fv.name = words[0]
         fv.era  = words[1]
 
-        mpname = VARIANT_VEHICLES_PREFIX + fv.name.lower() + \
-                 VARIANT_VEHICLES_POSTFIX
-        mppath = os.path.join(faction_dir, fv.era, mpname)
+        # Figure out whether the vehicle motorpool name is upper- or lower-cased
+        fv_names = [fv.name, fv.name.lower()]
+        
+        # Generate additional possible file name with lowercase variant name and
+        # uppercase camo
+        i = fv.name.find('(')
+        if i > 0:
+            p1 = fv.name[:i]
+            p2 = fv.name[i:]
+            fv_names.append(p1.lower() + p2)
+
+        vehicles_file_found = False
+        for name in fv_names:
+            mpname = VARIANT_VEHICLES_PREFIX + name + \
+                    VARIANT_VEHICLES_POSTFIX
+            mppath = os.path.join(faction_dir, fv.era, mpname)
+            if os.path.isfile(mppath):
+                vehicles_file_found = True
+                break
+        if not vehicles_file_found:
+            eprint(f"Could not find motorpool file '{mppath}'.")
+            sys.exit(1)
 
         if len(variants) > 1:
             debug_print(f"      * {fv.name} {fv.era}", end='')
